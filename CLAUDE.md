@@ -197,6 +197,12 @@ Public routes (outside `/api`, never auth-gated, because IPTV players can't send
     - `SyncLogPanel.tsx` is the per-playlist log drawer. Opening it marks the log read, and it offers Apply/Dismiss for suggestions still waiting.
     - `SyncFieldToggles.tsx` is the shared four-checkbox control (also used by Settings and Add to Playlist).
     - The My Playlists tab shows a dot (mirrored in Home) when any suggestion is pending, and the sidebar shows unread log counts.
+  - `ChannelListPdf.tsx` (toolbar "PDF" button, next to Sync log) is a printable A4 channel list copied from the maintainer's demo PDF.
+    - It's a preview in the shared `Dialog`, portaled into `<body>`. "Save PDF" waits for the font and logos (max 15s), then calls `window.print()`. The `@media print` block in `index.css` hides the app and the dialog's header/footer (`pdf-no-print`), and flattens the dialog's layout (`pdf-print-reset`), so only the sheets print. It's browser print-to-PDF, not a PDF library, which keeps any logo format and system-font fallback for glyphs Inter lacks.
+    - The dialog chrome uses the app's system UI font. Only the sheets use Inter, because they copy the demo.
+    - Order and numbering mirror `serveM3U` (hidden channels left out, numbers run through the whole playlist). EPG ✓ means the TVG-ID is in PlaylistEditor's `tvgIdLabels` (found in a loaded guide).
+    - Pagination is computed, not measured: every row is 36.99pt, so page 1 fits 17 rows and later pages 20 (`FIRST_PAGE_ROWS`/`PAGE_ROWS`). Change those if the `.pdf-*` sizes change.
+    - Fonts come from `@fontsource-variable/inter` (bundled, offline). "Inter Display" is the same font at `opsz` 32.
   - `BulkEpgAssignDialog.tsx` is opened from PlaylistEditor. It fuzzy-matches channel names to EPG channel names client-side (trigram + word overlap, precomputed index, chunked with yields) and applies matches in chunks via `bulk-update-many`, with cancel & revert.
 - **Sources**
   - `ChannelPoolViewer.tsx` is a virtualized list (56px rows). Search, category filter and sort run server-side. The selection persists across searches, and an `AddToPlaylistModal` bulk-adds the selection with an optional category override and an optional "Keep in sync with source" (default or custom fields, per selection; not offered for file sources). Linked pool rows show a link icon.

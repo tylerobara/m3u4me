@@ -6,12 +6,13 @@ import { useStore, contrastText, accentAlpha, notifyError, notifyInfo } from '..
 import {
   Download, Check, Copy,
   GripVertical, CheckSquare, Square, Trash2, Eye, EyeOff, Plus, ArrowUp, ArrowDown, Activity, X,
-  Replace, Search, Wand2, ChevronLeft, ChevronRight, Layers, Link2, History, Unlink,
+  Replace, Search, Wand2, ChevronLeft, ChevronRight, Layers, Link2, History, Unlink, FileDown,
 } from 'lucide-react';
 import BulkEpgAssignDialog from './BulkEpgAssignDialog';
 import { ChannelSyncPopover, BulkSyncSettingsDialog } from './ChannelSyncPopover';
 import LinkChannelDialog from './LinkChannelDialog';
 import SyncLogPanel from './SyncLogPanel';
+import ChannelListPdf from './ChannelListPdf';
 import ChannelLogo from './ChannelLogo';
 import { useDebouncedValue } from '../utils/useDebouncedValue';
 import { formatTime } from '../utils/formatTime';
@@ -532,6 +533,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
   const [syncPopover, setSyncPopover] = useState<{ channelId: string; anchor: DOMRect } | null>(null);
   const [linkDialogChannelId, setLinkDialogChannelId] = useState<string | null>(null);
   const [showSyncLog, setShowSyncLog] = useState(false);
+  const [showPdf, setShowPdf] = useState(false);
   const [showBulkSyncSettings, setShowBulkSyncSettings] = useState(false);
 
   // Resolved tvg-id labels: maps tvgId -> { displayName, sourceName }
@@ -1031,6 +1033,17 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
             </button>
 
             <button
+              onClick={() => setShowPdf(true)}
+              disabled={!channels.some(c => !c.isHidden)}
+              className={`${toolbarBtn} disabled:opacity-40`}
+              style={{ color: onAccent }}
+              title="Channel list PDF"
+            >
+              <FileDown className="h-3.5 w-3.5" />
+              <span className="hidden lg:inline">PDF</span>
+            </button>
+
+            <button
               onClick={() => { setShowFindReplace(true); setFrSearch(''); setFrReplace(''); setFrResult(null); if (selectedIds.size > 0) setFrScope('selected'); else setFrScope('category'); }}
               disabled={channels.length === 0}
               className={`${toolbarBtn} disabled:opacity-40`}
@@ -1503,6 +1516,15 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
             </div>
           </div>
         </div>
+      )}
+
+      {showPdf && (
+        <ChannelListPdf
+          playlist={playlist}
+          channels={channels}
+          tvgIdLabels={tvgIdLabels}
+          onClose={() => setShowPdf(false)}
+        />
       )}
 
       {/* ── Channel sync ─────────────────────────────────────────────────── */}

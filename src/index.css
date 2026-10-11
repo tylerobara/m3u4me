@@ -7,7 +7,7 @@
 @variant no-hover (@media (hover: none));
 
 html {
-  font-family: 'Roboto', system-ui, -apple-system, sans-serif;
+  font-family: system-ui, -apple-system, sans-serif;
 }
 
 /* ── MD2 motion tokens ────────────────────────────────────────────────
@@ -268,4 +268,165 @@ html {
     left: 0;
     width: 100%;
   }
+}
+
+/* ── Channel list PDF (ChannelListPdf.tsx) ────────────────────────────
+   A4 pages copied from the designer's demo PDF, so sizes are in pt/mm and
+   the numbers are the demo's measurements. "Inter Display" is Inter at
+   optical size 32 (`opsz` 32); the channel names use regular Inter (opsz 14).
+   Colors are fixed (no dark mode or accent): this is a printed document. */
+.pdf-sheets {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 24px;
+}
+.pdf-page {
+  --pdf-text: #333131;
+  position: relative;
+  flex-shrink: 0;
+  width: 210mm;
+  height: 297mm;
+  overflow: hidden;
+  background: #fff;
+  color: var(--pdf-text);
+  font-family: 'Inter Variable', system-ui, -apple-system, sans-serif;
+  font-variation-settings: 'opsz' 32;
+  line-height: 1;
+  box-shadow: 0 4px 16px rgba(0,0,0,.18);
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+/* The three title lines are placed by their measured baselines (73pt, 100pt,
+   123pt from the top); with line-height 1, Inter's baseline sits 0.864em down. */
+.pdf-title, .pdf-subtitle, .pdf-credit {
+  position: absolute;
+  left: 51pt;
+  right: 51pt;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdf-title    { top: 47.1pt;  font-size: 30pt; font-weight: 800; }
+.pdf-subtitle { top: 87.1pt;  font-size: 15pt; font-weight: 400; }
+.pdf-credit   { top: 112.8pt; font-size: 12pt; font-weight: 500; }
+.pdf-credit-logo {
+  display: inline-block;
+  vertical-align: baseline;
+  height: 9pt;
+  width: 50.7pt;
+  margin-left: 1pt;
+}
+.pdf-table {
+  position: absolute;
+  left: 51pt;
+  width: 493.2pt;
+}
+.pdf-category, .pdf-row {
+  display: flex;
+  align-items: center;
+  height: 36.99pt;
+}
+.pdf-category {
+  padding-left: 15.8pt;
+  background: #42403f;
+  color: #fff;
+  font-size: 16pt;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdf-row { background: #f7f6f6; }
+.pdf-row-alt { background: #efeded; }
+.pdf-number {
+  width: 65.2pt;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 14pt;
+  font-weight: 900;
+}
+.pdf-logo-cell {
+  width: 70.9pt;
+  height: 100%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #3a3838;
+}
+.pdf-row-alt .pdf-logo-cell { background: #2c2a2a; }
+.pdf-logo {
+  width: 38pt;
+  height: 22pt;
+  /* Initials shown by ChannelLogo when a channel has no (working) logo. These
+     unlayered rules beat its Tailwind text-[8px]/text-gray-400 utilities. */
+  font-size: 8pt;
+  color: #9a9696;
+}
+.pdf-name {
+  flex: 1;
+  min-width: 0;
+  padding: 0 8pt;
+  text-align: center;
+  font-size: 14pt;
+  font-weight: 700;
+  font-variation-settings: 'opsz' 14;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdf-epg {
+  width: 59pt;
+  flex-shrink: 0;
+  padding-right: 13.2pt;
+  display: flex;
+  justify-content: flex-end;
+}
+.pdf-epg-yes, .pdf-epg-no {
+  display: flex;
+  align-items: center;
+  gap: 2pt;
+  font-weight: 900;
+}
+/* The demo's sizes differ slightly between the two marks. */
+.pdf-epg-yes { color: #2fb35f; font-size: 9.56pt; }
+.pdf-epg-no  { color: #e0342f; font-size: 8.73pt; margin-right: 1.3pt; }
+.pdf-epg-icon { flex-shrink: 0; }
+.pdf-page-number {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 24pt;
+  text-align: center;
+  font-size: 12pt;
+}
+
+/* Printing hides the whole app (the preview is portaled outside #root) and
+   prints just the sheets, one per A4 page with no browser margins. The preview
+   dialog's scrim, panel and scroll area (`pdf-print-reset`) become plain blocks
+   so the sheets can flow across pages; its header and footer aren't printed. */
+@media print {
+  @page { size: A4; margin: 0; }
+  body > :not(.pdf-print-root),
+  .pdf-no-print { display: none !important; }
+  .pdf-print-reset {
+    position: static !important;
+    display: block !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: none !important;
+    box-shadow: none !important;
+    animation: none !important;
+    transform: none !important;
+  }
+  .pdf-sheets { display: block; padding: 0; zoom: 1 !important; }
+  .pdf-page { box-shadow: none; break-after: page; }
+  .pdf-page:last-child { break-after: auto; }
 }
