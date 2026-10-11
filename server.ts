@@ -109,9 +109,13 @@ interface ChannelPoolSource {
   type: 'xtream' | 'playlist-url' | 'playlist-file';
   url: string | null;
   xtreamCredentials?: { username: string; password: string };
+  // Sent as the User-Agent header when downloading, because some providers only serve
+  // requests that look like a known IPTV app. Absent/empty = Node's default ("node").
+  userAgent?: string | null;
   refreshIntervalHours: number;
   lastFetched: number | null;
   lastFetchError: string | null; // set when the most recent refresh attempt failed; cleared on success
+  lastFetchErrorAt?: number | null; // when lastFetchError happened; absent on old records
   channelCount: number;
   createdAt: number;
   updatedAt: number;
@@ -434,9 +438,11 @@ const channelPoolCache = new Map<string, ChannelPoolEntry[]>();
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
 const FETCH_ATTEMPTS = 5;
 
-async function fetchWithRetry(url: string): Promise<Response> {
+async function fetchWithRetry(url: string, userAgent?: string | null): Promise<Response> {
+  // Without a custom user agent nothing is set, so Node sends its own ("node"), as it always has.
+  const init: RequestInit = userAgent ? { headers: { 'User-Agent': userAgent } } : {};
   for (let attempt = 1; ; attempt++) {
-    const res = await fetch(url);
+    const res = await fetch(url, init);
     if (!RETRYABLE_STATUSES.has(res.status) || attempt === FETCH_ATTEMPTS) return res;
     // The failed response's body isn't needed; cancel it so the connection is released.
     await res.body?.cancel().catch(() => {});
@@ -445,34 +451,100 @@ async function fetchWithRetry(url: string): Promise<Response> {
   }
 }
 
+// The messages below end up in `lastFetchError`, which the Sources tab shows in full when you open
+// a source whose download failed. They're for the user, not a developer, so each one says what went
+// wrong in plain words and what to try next.
+const USER_AGENT_HINT = "Some providers only allow certain IPTV apps, so try another user agent in the source's settings.";
+
+function httpErrorMessage(status: number): string {
+  if (status === 401 || status === 403) {
+    return `The provider refused the download (error ${status}). Check the login details and whether your subscription is still active. ${USER_AGENT_HINT}`;
+  }
+  if (status === 404) return `Nothing was found at this address (error 404). Check the link in the source's settings.`;
+  if (status === 429) return `The provider says there were too many requests (error 429). m3u4me tries again every 5 minutes.`;
+  // Some Xtream providers answer 451 once a subscription has expired (both of the maintainer's
+  // did, whatever the user agent), so that's named first. It can also be an app block.
+  if (status === 451) {
+    return `The provider is refusing downloads (error 451). Some providers answer this way once a subscription has expired, so check that yours is still active. If it is, the provider may only allow certain IPTV apps, so try another user agent in the source's settings.`;
+  }
+  if (status >= 500) {
+    return `The provider's server isn't working right now (error ${status}). This is usually temporary, and m3u4me tries again every 5 minutes.`;
+  }
+  return `The provider turned the download down (error ${status}). ${USER_AGENT_HINT}`;
+}
+
+// Turns whatever a failed download threw into a plain-language message. Errors this file threw on
+// purpose (the HTTP and Xtream checks) already read well and pass through untouched. Network
+// failures arrive from fetch as a bare "fetch failed" with the real reason in `cause.code`.
+function describeSourceFetchError(err: unknown, url: string | null): string {
+  let host = 'the server';
+  try { if (url) host = `"${new URL(url).host}"`; } catch { /* keeps the generic wording */ }
+
+  const cause = (err as { cause?: { code?: string; message?: string; errors?: { code?: string }[] } } | null)?.cause;
+  // A host with several addresses that all refuse the connection reports an AggregateError,
+  // whose individual errors carry the code.
+  const code = cause?.code || cause?.errors?.[0]?.code || (err as { code?: string } | null)?.code || '';
+
+  if (code === 'ERR_INVALID_URL') return `The source's address isn't a valid link. Check it in the source's settings.`;
+  if (code === 'ENOTFOUND') return `Couldn't find the server ${host}. Check the address for typos.`;
+  if (code === 'EAI_AGAIN') return `Couldn't look up the server ${host}. Check this computer's internet connection, then try again.`;
+  if (code === 'ECONNREFUSED') return `The server ${host} refused the connection. Check the address and port, or try again later.`;
+  if (code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' || code === 'EPIPE') {
+    return `The connection to ${host} was cut off during the download. Try again later. ${USER_AGENT_HINT}`;
+  }
+  if (code === 'ETIMEDOUT' || (code.startsWith('UND_ERR_') && code.endsWith('_TIMEOUT'))) {
+    return `The server ${host} took too long to answer. Try again later.`;
+  }
+  if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
+    return `Couldn't reach the server ${host}. Check this computer's internet connection, then try again.`;
+  }
+  if (code.includes('CERT') || code.startsWith('ERR_TLS') || code.startsWith('ERR_SSL')) {
+    return `The server ${host} has a security certificate that isn't valid. Try the address with http:// instead of https://.`;
+  }
+  if (code) return `Couldn't connect to the server ${host} (${code}). Check the address, or try again later.`;
+  // Some network failures carry no code at all, only a short reason (e.g. "bad port").
+  if (err instanceof TypeError && err.message === 'fetch failed') {
+    return `Couldn't connect to the server ${host}${cause?.message ? ` (${cause.message})` : ''}. Check the address, or try again later.`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+// Reads an Xtream API answer, which should be a JSON array. Panels answer HTTP 200 even for a bad
+// or expired login, with an error object instead of the array. Treating that as "zero channels"
+// would make a login hiccup look like a real, empty refresh and wipe out every cached channel, so
+// it's a failure instead (refreshChannelPoolSource leaves the cached entries untouched on error).
+async function readXtreamList(res: Response): Promise<any[]> {
+  if (!res.ok) throw new Error(httpErrorMessage(res.status));
+  const text = await res.text();
+  let data: any;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = undefined;
+  }
+  if (Array.isArray(data)) return data;
+  const userInfo = data?.user_info;
+  if (userInfo && (userInfo.auth === 0 || userInfo.auth === '0')) {
+    throw new Error("The provider rejected the username or password. Check them in the source's settings, or ask your provider whether the subscription is still active.");
+  }
+  if (userInfo?.status && String(userInfo.status).toLowerCase() !== 'active') {
+    throw new Error(`The provider says this account is "${userInfo.status}". Ask your provider about your subscription.`);
+  }
+  throw new Error(`The server didn't answer like an Xtream Codes server. Check the server URL: it should be just the address and port, like http://example.com:8080. ${USER_AGENT_HINT}`);
+}
+
 async function fetchXtreamChannels(source: ChannelPoolSource): Promise<ChannelPoolEntry[]> {
   if (!source.url || !source.xtreamCredentials) return [];
   const baseUrl = source.url.replace(/\/$/, '');
   const { username, password } = source.xtreamCredentials;
-  
-  const catRes = await fetchWithRetry(`${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_categories`);
-  if (!catRes.ok) throw new Error(`Failed to fetch categories: ${catRes.statusText}`);
-  const catData = await catRes.json();
-  // Xtream panels respond with HTTP 200 even for an invalid/expired login — the body is
-  // an error object (e.g. {"user_info":{"auth":0}}) instead of the expected array. Treating
-  // that as "zero categories/channels" would make a transient auth hiccup look like a real,
-  // empty refresh and wipe out every previously cached channel for this source, so it's
-  // treated as a hard failure instead (caught by refreshChannelPoolSource, which leaves the
-  // existing cached entries untouched on error).
-  if (!Array.isArray(catData)) {
-    throw new Error('Xtream server returned an unexpected response for categories (check the URL/username/password — the login may be invalid or expired).');
-  }
+
+  const catData = await readXtreamList(await fetchWithRetry(`${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_categories`, source.userAgent));
   const catMap = new Map<string, string>();
   for (const c of catData) {
     catMap.set(String(c.category_id), c.category_name || 'General');
   }
 
-  const streamsRes = await fetchWithRetry(`${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_streams`);
-  if (!streamsRes.ok) throw new Error(`Failed to fetch streams: ${streamsRes.statusText}`);
-  const streamsData = await streamsRes.json();
-  if (!Array.isArray(streamsData)) {
-    throw new Error('Xtream server returned an unexpected response for live streams (check the URL/username/password — the login may be invalid or expired).');
-  }
+  const streamsData = await readXtreamList(await fetchWithRetry(`${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_streams`, source.userAgent));
 
   const entries: ChannelPoolEntry[] = [];
   for (const s of streamsData) {
@@ -550,13 +622,24 @@ function parseXspfToChannelPoolEntries(content: string, sourceId: string): Chann
 
 async function fetchPlaylistChannels(source: ChannelPoolSource): Promise<ChannelPoolEntry[]> {
   if (!source.url) return [];
-  const res = await fetchWithRetry(source.url);
-  if (!res.ok) throw new Error(`Failed to fetch playlist: ${res.statusText}`);
+  const res = await fetchWithRetry(source.url, source.userAgent);
+  if (!res.ok) throw new Error(httpErrorMessage(res.status));
   const content = await res.text();
-  if (content.trim().startsWith('<?xml') && content.includes('<playlist')) {
-    return parseXspfToChannelPoolEntries(content, source.id);
+  const entries = content.trim().startsWith('<?xml') && content.includes('<playlist')
+    ? parseXspfToChannelPoolEntries(content, source.id)
+    : parseM3uToChannelPoolEntries(content, source.id);
+  // A link that downloads fine but holds no channels is almost always the wrong thing: a login
+  // page, a "blocked" notice, an empty answer. Saving it would empty the source and log every
+  // channel as removed, so it counts as a failed download and the old channels stay.
+  if (entries.length === 0) {
+    const text = content.trim();
+    if (!text) throw new Error(`The link answered, but sent nothing back. Check the link, or try again later. ${USER_AGENT_HINT}`);
+    if (/^<(!doctype|html|head|body)/i.test(text)) {
+      throw new Error(`The link sent back a web page instead of a playlist. Check the link. ${USER_AGENT_HINT}`);
+    }
+    throw new Error(`The link downloaded, but it doesn't contain any channels. Check that it points to an M3U or XSPF playlist.`);
   }
-  return parseM3uToChannelPoolEntries(content, source.id);
+  return entries;
 }
 
 // Inspects M3U/XSPF text and returns a warning message if it looks like something
@@ -986,15 +1069,17 @@ async function refreshChannelPoolSource(sourceId: string): Promise<boolean> {
     updatedDb.channelPoolSources[idx].lastFetched = Date.now();
     updatedDb.channelPoolSources[idx].channelCount = newEntries.length;
     updatedDb.channelPoolSources[idx].lastFetchError = null;
+    updatedDb.channelPoolSources[idx].lastFetchErrorAt = null;
     writeDb(updatedDb);
     return changed;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = describeSourceFetchError(err, source.url);
     console.error(`Failed to refresh Channel Pool source ${source.name}:`, err);
     const updatedDb = readDb();
     const idx = updatedDb.channelPoolSources.findIndex(s => s.id === sourceId);
     if (idx !== -1) {
       updatedDb.channelPoolSources[idx].lastFetchError = message;
+      updatedDb.channelPoolSources[idx].lastFetchErrorAt = Date.now();
       writeDb(updatedDb);
     }
     return false;
@@ -1563,7 +1648,8 @@ async function startServer() {
   });
 
   app.post("/api/channel-pool/validate-url", async (req, res) => {
-    const { url } = req.body;
+    // userAgent is the one picked in the dialog, so the check sees what the real download will.
+    const { url, userAgent } = req.body;
     if (!url) return res.status(400).json({ error: "Missing URL" });
 
     try {
@@ -1575,7 +1661,7 @@ async function startServer() {
         response = await fetch(url, {
           signal: controller.signal,
           headers: {
-            'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16',
+            'User-Agent': userAgent || 'VLC/3.0.16 LibVLC/3.0.16',
             'Accept': '*/*'
           }
         });
@@ -1678,6 +1764,9 @@ async function startServer() {
     const changed = await refreshChannelPoolSource(req.params.id);
     const db = readDb();
     const source = db.channelPoolSources.find(s => s.id === req.params.id);
+    // A failed download answers with an error, so the Refresh button shows why it failed
+    // instead of "no changes found".
+    if (source?.lastFetchError) return res.status(502).json({ error: source.lastFetchError });
     res.json({ success: true, channelCount: source?.channelCount || 0, changed });
   });
 

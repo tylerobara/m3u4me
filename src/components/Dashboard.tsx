@@ -145,7 +145,12 @@ export default function Dashboard({ activeView }: { activeView: 'playlists' | 'c
       // A refresh can also update channels linked to this source, in any playlist.
       triggerRefresh();
       if (!result.changed) notifyInfo('No changes found — channel list is already up to date.');
-    } catch (e) { console.error(e); notifyError(e); }
+    } catch (e) {
+      console.error(e);
+      notifyError(e);
+      // A failed download is saved on the source too, so refetch the list to show the reason.
+      triggerChannelPoolRefresh();
+    }
     finally { setRefreshingChannelPoolId(null); }
   };
   const [sidebarWidth, setSidebarWidth] = useState(256);
@@ -520,7 +525,15 @@ export default function Dashboard({ activeView }: { activeView: 'playlists' | 'c
                             style={isActive ? { color: accentColor } : undefined}
                           >
                             <span className="flex items-center gap-2 truncate">
-                              <Layers className="w-3.5 h-3.5 shrink-0 opacity-60" />
+                              {/* A failed download swaps the source's icon for a red warning sign instead of
+                                  adding a badge, so the row stays as quiet as a working one. */}
+                              {src.lastFetchError ? (
+                                <span className="shrink-0 flex" title={`Last refresh failed: ${src.lastFetchError}`}>
+                                  <AlertTriangle className="w-3.5 h-3.5 text-red-500 dark:text-red-400" />
+                                </span>
+                              ) : (
+                                <Layers className="w-3.5 h-3.5 shrink-0 opacity-60" />
+                              )}
                               <span className="truncate">{src.name}</span>
                             </span>
                             <span className="flex items-center gap-1.5 text-[10px] text-gray-400 dark:text-gray-500 ml-5.5 font-normal">
@@ -533,15 +546,6 @@ export default function Dashboard({ activeView }: { activeView: 'playlists' | 'c
                                     {src.refreshIntervalHours}h
                                   </span>
                                 </>
-                              )}
-                              {src.lastFetchError && (
-                                <span
-                                  className="flex items-center gap-0.5 text-red-500 dark:text-red-400"
-                                  title={`Last refresh failed: ${src.lastFetchError}`}
-                                >
-                                  <AlertTriangle className="w-2.5 h-2.5" />
-                                  Refresh failed
-                                </span>
                               )}
                             </span>
                           </div>
@@ -651,7 +655,15 @@ export default function Dashboard({ activeView }: { activeView: 'playlists' | 'c
                             style={isActive ? { color: accentColor } : undefined}
                           >
                             <span className="flex items-center gap-2 truncate">
-                              <Radio className="w-3.5 h-3.5 shrink-0 opacity-60" />
+                              {/* A failed download swaps the source's icon for a red warning sign instead of
+                                  adding a badge, so the row stays as quiet as a working one. */}
+                              {src.lastFetchError ? (
+                                <span className="shrink-0 flex" title={`Last refresh failed: ${src.lastFetchError}`}>
+                                  <AlertTriangle className="w-3.5 h-3.5 text-red-500 dark:text-red-400" />
+                                </span>
+                              ) : (
+                                <Radio className="w-3.5 h-3.5 shrink-0 opacity-60" />
+                              )}
                               <span className="truncate">{src.name}</span>
                             </span>
                             <span className="flex items-center gap-1.5 text-[10px] text-gray-400 dark:text-gray-500 ml-5.5 font-normal">
@@ -661,15 +673,6 @@ export default function Dashboard({ activeView }: { activeView: 'playlists' | 'c
                                 <Clock className="w-2.5 h-2.5" />
                                 {src.refreshIntervalHours}h
                               </span>
-                              {src.lastFetchError && (
-                                <span
-                                  className="flex items-center gap-0.5 text-red-500 dark:text-red-400"
-                                  title={`Last refresh failed: ${src.lastFetchError}`}
-                                >
-                                  <AlertTriangle className="w-2.5 h-2.5" />
-                                  Refresh failed
-                                </span>
-                              )}
                             </span>
                           </div>
                         )}
@@ -749,7 +752,13 @@ export default function Dashboard({ activeView }: { activeView: 'playlists' | 'c
                 {activeChannelPoolSourceId ? (
                   <ChannelPoolViewer
                     sourceId={activeChannelPoolSourceId}
-                    sourceType={channelPoolSources.find(s => s.id === activeChannelPoolSourceId)?.type}
+                    source={channelPoolSources.find(s => s.id === activeChannelPoolSourceId)}
+                    onRetry={() => handleRefreshChannelPoolSource(activeChannelPoolSourceId)}
+                    isRetrying={refreshingChannelPoolId === activeChannelPoolSourceId}
+                    onEdit={() => {
+                      setPoolSourceToEdit(channelPoolSources.find(s => s.id === activeChannelPoolSourceId) || null);
+                      setIsCreatingChannelPool(true);
+                    }}
                   />
                 ) : (
                   <div className="flex-1 flex items-center justify-center bg-gray-100 dark:bg-[#121212] amoled:dark:bg-black">

@@ -178,9 +178,13 @@ export interface ChannelPoolSource {
   type: 'xtream' | 'playlist-url' | 'playlist-file';
   url: string | null;
   xtreamCredentials?: { username: string; password: string };
+  /** Sent as the User-Agent header when downloading. Absent/empty = the app's default. */
+  userAgent?: string | null;
   refreshIntervalHours: number;
   lastFetched: number | null;
+  /** A plain-language reason the last download failed; null once one succeeds. */
   lastFetchError: string | null;
+  lastFetchErrorAt?: number | null;
   channelCount: number;
   createdAt: number;
   updatedAt: number;
@@ -318,9 +322,9 @@ export const api = {
 
   // Channel Pool Sources
   getChannelPoolSources: () => authFetch('/api/channel-pool/sources').then(r => r.json()) as Promise<ChannelPoolSource[]>,
-  validateChannelPoolSourceUrl: (url: string) => 
-    authFetch('/api/channel-pool/validate-url', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url }) }).then(r => r.json()) as Promise<{ warning: string | null }>,
-  createChannelPoolSource: (data: { name: string; type: 'xtream' | 'playlist-url' | 'playlist-file'; url?: string; xtreamCredentials?: { username: string; password: string }; refreshIntervalHours?: number }) =>
+  validateChannelPoolSourceUrl: (url: string, userAgent?: string | null) =>
+    authFetch('/api/channel-pool/validate-url', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url, userAgent }) }).then(r => r.json()) as Promise<{ warning: string | null }>,
+  createChannelPoolSource: (data: { name: string; type: 'xtream' | 'playlist-url' | 'playlist-file'; url?: string; xtreamCredentials?: { username: string; password: string }; userAgent?: string | null; refreshIntervalHours?: number }) =>
     authFetch('/api/channel-pool/sources', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()) as Promise<ChannelPoolSource>,
   updateChannelPoolSource: (id: string, updates: Partial<ChannelPoolSource>) =>
     authFetch(`/api/channel-pool/sources/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(updates) }).then(r => r.json()),

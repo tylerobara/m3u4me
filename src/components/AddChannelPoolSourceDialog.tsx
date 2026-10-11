@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
 import { api, triggerChannelPoolRefresh, ChannelPoolSource } from '../apiClient';
-import { useStore, notifyError } from '../store';
+import { useStore, notifyError, notifyWarning } from '../store';
 import Dialog from './Dialog';
+import { USER_AGENT_PRESETS } from '../utils/userAgents';
 
 interface AddChannelPoolSourceDialogProps {
   open: boolean;
@@ -13,7 +14,7 @@ interface AddChannelPoolSourceDialogProps {
 type TabType = 'playlist-url' | 'xtream' | 'upload';
 
 export default function AddChannelPoolSourceDialog({ open, onClose, editingSource }: AddChannelPoolSourceDialogProps) {
-  const { accentColor } = useStore();
+  const { accentColor, setActiveChannelPoolSourceId } = useStore();
   const [tab, setTab] = useState<TabType>('playlist-url');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -32,6 +33,20 @@ export default function AddChannelPoolSourceDialog({ open, onClose, editingSourc
   const [xtreamPass, setXtreamPass] = useState('');
   const [xtreamInterval, setXtreamInterval] = useState(24);
 
+  // User agent, shared by the Playlist Link and Xtream tabs. '' = the app's default.
+  // `customUserAgent` is on when the user picked "Custom…" or the saved value isn't a preset.
+  const [userAgent, setUserAgent] = useState('');
+  const [customUserAgent, setCustomUserAgent] = useState(false);
+  // Most providers work with the app default, so the user agent choice stays folded away unless
+  // the source already uses one or its last download failed (when trying another app can help).
+  const [showUserAgent, setShowUserAgent] = useState(false);
+
+  // Why the source's last download failed. Shown when editing a failing source, so a different
+  // user agent or login can be tried right there. `savedButFailed` = this dialog's own save
+  // went through but the download right after it still failed.
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [savedButFailed, setSavedButFailed] = useState(false);
+
   // Upload State
   const [uploadName, setUploadName] = useState('');
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -43,6 +58,12 @@ export default function AddChannelPoolSourceDialog({ open, onClose, editingSourc
       // previous dialog session never leaks into a fresh one.
       setLinkWarning(null);
       setLinkWarningConfirmed(false);
+      const savedUserAgent = editingSource?.userAgent || '';
+      setUserAgent(savedUserAgent);
+      setCustomUserAgent(savedUserAgent !== '' && !USER_AGENT_PRESETS.some(p => p.value === savedUserAgent));
+      setShowUserAgent(savedUserAgent !== '' || !!editingSource?.lastFetchError);
+      setDownloadError(editingSource?.lastFetchError || null);
+      setSavedButFailed(false);
       if (editingSource) {
         setTab(editingSource.type);
         if (editingSource.type === 'playlist-url') {
@@ -89,7 +110,7 @@ export default function AddChannelPoolSourceDialog({ open, onClose, editingSourc
     if (tab === 'playlist-url' && linkUrl.startsWith('http') && !linkWarningConfirmed) {
       setIsSubmitting(true);
       try {
-        const result = await api.validateChannelPoolSourceUrl(linkUrl);
+        const result = await api.validateChannelPoolSourceUrl(linkUrl, userAgent.trim() || null);
         if (result.warning) {
           setLinkWarning(result.warning);
           setLinkWarningConfirmed(true); // next click will proceed despite warning
@@ -112,10 +133,12 @@ export default function AddChannelPoolSourceDialog({ open, onClose, editingSourc
         if (tab === 'playlist-url') {
           updates.url = linkUrl;
           updates.refreshIntervalHours = linkInterval;
+          updates.userAgent = userAgent.trim() || null;
         } else if (tab === 'xtream') {
           updates.url = xtreamUrl;
           updates.xtreamCredentials = { username: xtreamUser, password: xtreamPass };
           updates.refreshIntervalHours = xtreamInterval;
+          updates.userAgent = userAgent.trim() || null;
         } else if (tab === 'upload') {
           // Note: for file uploads, if the user doesn't pick a new file, we just update the name.
           if (uploadFile) {
@@ -134,8 +157,13 @@ export default function AddChannelPoolSourceDialog({ open, onClose, editingSourc
         }
         await api.updateChannelPoolSource(editingSource.id, updates);
 
-        // If URL or credentials changed, trigger a refresh to fetch new channels
+        // If URL, credentials or user agent changed, trigger a refresh to fetch new channels.
+        // A source whose last download failed is retried on any save too.
         let needsRefresh = false;
+        if (tab === 'playlist-url' || tab === 'xtream') {
+          if (userAgent.trim() !== (editingSource.userAgent || '')) needsRefresh = true;
+          if (editingSource.lastFetchError) needsRefresh = true;
+        }
         if (tab === 'playlist-url' && linkUrl !== (editingSource.url || '')) {
           needsRefresh = true;
         } else if (tab === 'xtream') {
@@ -145,29 +173,46 @@ export default function AddChannelPoolSourceDialog({ open, onClose, editingSourc
         }
 
         if (needsRefresh) {
-          // Fire and forget or await? Better to await so UI shows loading state in dialog,
-          // or just fire and forget so it refreshes in the background?
-          // Since the Channels view has a loading state, we can just fire and await it.
-          // Or wait, `triggerChannelPoolRefresh` triggers a refetch of the sources.
-          await api.refreshChannelPoolSource(editingSource.id);
+          try {
+            await api.refreshChannelPoolSource(editingSource.id);
+          } catch (refreshError) {
+            // The changes are saved, but the download failed. The dialog stays open with the
+            // reason, so another user agent or login can be tried straight away.
+            console.error(refreshError);
+            triggerChannelPoolRefresh();
+            setDownloadError(refreshError instanceof Error ? refreshError.message : String(refreshError));
+            setSavedButFailed(true);
+            setShowUserAgent(true);
+            return;
+          }
         }
       } else {
+        let created: ChannelPoolSource | null = null;
         if (tab === 'playlist-url') {
-          await api.createChannelPoolSource({
+          created = await api.createChannelPoolSource({
             name: linkName,
             type: 'playlist-url',
             url: linkUrl,
+            userAgent: userAgent.trim() || null,
             refreshIntervalHours: linkInterval,
           });
         } else if (tab === 'xtream') {
-          await api.createChannelPoolSource({
+          created = await api.createChannelPoolSource({
             name: xtreamName,
             type: 'xtream',
             url: xtreamUrl,
             xtreamCredentials: { username: xtreamUser, password: xtreamPass },
+            userAgent: userAgent.trim() || null,
             refreshIntervalHours: xtreamInterval,
           });
-        } else if (tab === 'upload' && uploadFile) {
+        }
+        // The source exists either way, so the dialog closes. Selecting it puts the reason for
+        // the failure on screen (the Sources tab shows it in place of the channel list).
+        if (created?.lastFetchError) {
+          setActiveChannelPoolSourceId(created.id);
+          notifyWarning("The source was added, but its channels couldn't be downloaded. The source shows why.");
+        }
+        if (tab === 'upload' && uploadFile) {
           const text = await uploadFile.text();
           await api.uploadChannelPoolSource({ name: uploadName, content: text, filename: uploadFile.name });
         }
@@ -190,6 +235,65 @@ export default function AddChannelPoolSourceDialog({ open, onClose, editingSourc
   };
 
   const inputClasses = "w-full border border-gray-400 dark:border-gray-500 rounded px-3 py-2.5 text-sm focus:outline-none bg-transparent text-gray-900 dark:text-white placeholder-gray-400";
+
+  const selectedUserAgentPreset = customUserAgent ? 'custom' : (USER_AGENT_PRESETS.find(p => p.value === userAgent)?.value ?? 'custom');
+
+  // Shown on the Playlist Link and Xtream tabs, under Refresh Interval. Optional: leaving it
+  // folded (or on "App default") downloads the way the app always has.
+  const renderUserAgentField = () => !showUserAgent ? (
+    <button
+      type="button"
+      onClick={() => setShowUserAgent(true)}
+      className="self-start -mt-1 flex items-center gap-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+    >
+      <ChevronRight className="w-3.5 h-3.5" />
+      User agent (optional)
+    </button>
+  ) : (
+    <div>
+      <button
+        type="button"
+        onClick={() => setShowUserAgent(false)}
+        className="flex items-center gap-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white mb-1"
+      >
+        <ChevronDown className="w-3.5 h-3.5" />
+        User agent (optional)
+      </button>
+      <select
+        value={selectedUserAgentPreset}
+        onChange={(e) => {
+          // The link check's result depended on the old user agent, so it runs again.
+          setLinkWarning(null);
+          setLinkWarningConfirmed(false);
+          if (e.target.value === 'custom') {
+            setCustomUserAgent(true);
+          } else {
+            setCustomUserAgent(false);
+            setUserAgent(e.target.value);
+          }
+        }}
+        className="w-full border border-gray-400 dark:border-gray-500 rounded px-3 py-2.5 text-sm focus:outline-none bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] text-gray-900 dark:text-white"
+      >
+        {USER_AGENT_PRESETS.map(p => <option key={p.label} value={p.value}>{p.label}</option>)}
+        <option value="custom">Custom…</option>
+      </select>
+      {customUserAgent && (
+        <input
+          type="text"
+          placeholder="e.g. MyPlayer/1.0"
+          value={userAgent}
+          onChange={(e) => { setUserAgent(e.target.value); setLinkWarning(null); setLinkWarningConfirmed(false); }}
+          className={inputClasses + " mt-2 font-mono text-xs"}
+          onFocus={(e) => (e.target.style.borderColor = accentColor)}
+          onBlur={(e) => (e.target.style.borderColor = '')}
+        />
+      )}
+      <p className="text-[10px] text-gray-500 mt-1">
+        The app this source pretends to be when downloading. Leave it on "App default" unless your provider only works with certain apps, or downloading fails or is blocked.
+      </p>
+    </div>
+  );
+
 
   return (
     <Dialog onClose={onClose}>
@@ -285,6 +389,7 @@ export default function AddChannelPoolSourceDialog({ open, onClose, editingSourc
                   <span className="text-sm text-gray-600 dark:text-gray-400">hours</span>
                 </div>
               </div>
+              {renderUserAgentField()}
             </>
           ) : tab === 'xtream' ? (
             <>
@@ -357,6 +462,7 @@ export default function AddChannelPoolSourceDialog({ open, onClose, editingSourc
                 </div>
                 <p className="text-[10px] text-gray-500 mt-1">Will fetch live stream channels from the Xtream API</p>
               </div>
+              {renderUserAgentField()}
             </>
           ) : (
             <>
@@ -387,6 +493,16 @@ export default function AddChannelPoolSourceDialog({ open, onClose, editingSourc
                 />
               </div>
             </>
+          )}
+
+          {downloadError && tab !== 'upload' && (
+            <div className="flex gap-2 rounded border border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-500/10 px-3 py-2.5 text-xs text-red-700 dark:text-red-300">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <p>
+                <span className="font-medium">{savedButFailed ? 'Saved, but downloading still failed.' : 'The last download failed.'}</span>{' '}
+                {downloadError}
+              </p>
+            </div>
           )}
 
           <div className="flex justify-end gap-1 mt-2">

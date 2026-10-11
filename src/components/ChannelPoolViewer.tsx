@@ -1,16 +1,104 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { api, ChannelPoolEntry, ChannelPoolSource, usePlaylists, Playlist, channelPoolEvents, triggerRefresh, triggerChannelPoolRefresh, SyncFieldToggles as SyncFieldTogglesValue } from '../apiClient';
 import { useStore, notifyError } from '../store';
-import { Search, Loader2, Plus, Check, X, CheckSquare, Square, Link2 } from 'lucide-react';
+import { Search, Loader2, Plus, Check, X, CheckSquare, Square, Link2, AlertTriangle, RefreshCw, Pencil } from 'lucide-react';
 import ChannelLogo from './ChannelLogo';
 import { useDebouncedValue } from '../utils/useDebouncedValue';
+import { formatTime } from '../utils/formatTime';
 import Dialog from './Dialog';
 import SyncFieldToggles, { describeSyncFields, anySyncFieldOn } from './SyncFieldToggles';
 
 interface ChannelPoolViewerProps {
   sourceId: string;
   // Undefined while the source list is still loading. Sync is only offered once it's known.
-  sourceType?: ChannelPoolSource['type'];
+  source?: ChannelPoolSource;
+  // Re-downloads the source (Dashboard's sidebar refresh), and opens its edit dialog. Both are
+  // offered next to a failed download's reason.
+  onRetry: () => void;
+  isRetrying: boolean;
+  onEdit: () => void;
+}
+
+// "Today at 14:32" / "03.09.2026 at 14:32", same shape as the Sources update log.
+function formatWhen(ts: number, is24Hour: boolean): string {
+  const date = new Date(ts);
+  const timeStr = formatTime(date, is24Hour);
+  return new Date().toDateString() === date.toDateString() ? `Today at ${timeStr}` : `${date.toLocaleDateString()} at ${timeStr}`;
+}
+
+// Why the source's last download failed, with ways to fix it. It stays on screen whenever the
+// source is open, until a download works (the server then clears `lastFetchError`).
+// `full` = nothing was ever downloaded, so this takes the list's place; otherwise it's a banner
+// above the channels saved from the last download that worked.
+function DownloadErrorNotice({
+  source,
+  full,
+  accentColor,
+  is24Hour,
+  onRetry,
+  isRetrying,
+  onEdit,
+}: {
+  source: ChannelPoolSource;
+  full: boolean;
+  accentColor: string;
+  is24Hour: boolean;
+  onRetry: () => void;
+  isRetrying: boolean;
+  onEdit: () => void;
+}) {
+  const details = [
+    source.lastFetchErrorAt ? `Last tried: ${formatWhen(source.lastFetchErrorAt, is24Hour)}.` : null,
+    !full && source.lastFetched ? `Showing the channels from the last download that worked: ${formatWhen(source.lastFetched, is24Hour)}.` : null,
+  ].filter(Boolean).join(' ');
+
+  const buttons = (
+    <div className={`flex items-center gap-1 ${full ? 'justify-center mt-4' : 'mt-2 -ml-2'}`}>
+      <button
+        onClick={onRetry}
+        disabled={isRetrying}
+        className="md-btn h-8 px-3 rounded text-xs font-medium uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50"
+        style={{ color: accentColor }}
+      >
+        <RefreshCw className={`h-3.5 w-3.5 ${isRetrying ? 'animate-spin' : ''}`} />
+        {isRetrying ? 'Trying…' : 'Try again'}
+      </button>
+      <button
+        onClick={onEdit}
+        className="md-btn h-8 px-3 rounded text-xs font-medium uppercase tracking-wider flex items-center gap-1.5"
+        style={{ color: accentColor }}
+      >
+        <Pencil className="h-3.5 w-3.5" />
+        Edit source
+      </button>
+    </div>
+  );
+
+  if (full) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full px-6 text-center">
+        <div className="w-12 h-12 rounded-full flex items-center justify-center bg-red-50 dark:bg-red-500/10 mb-4">
+          <AlertTriangle className="h-6 w-6 text-red-500 dark:text-red-400" />
+        </div>
+        <h3 className="text-base font-medium text-gray-900 dark:text-white">Couldn't download this source</h3>
+        <p className="mt-2 max-w-md text-sm text-gray-600 dark:text-gray-300">{source.lastFetchError}</p>
+        {details && <p className="mt-2 max-w-md text-xs text-gray-400 dark:text-gray-500">{details}</p>}
+        {buttons}
+      </div>
+    );
+  }
+
+  return (
+    <div className="shrink-0 flex gap-3 px-4 py-3 border-b border-red-200 dark:border-red-500/20 bg-red-50 dark:bg-red-500/10">
+      <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-red-500 dark:text-red-400" />
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-red-700 dark:text-red-300">Couldn't download the latest channels</p>
+        <p className="mt-0.5 text-sm text-red-700/90 dark:text-red-300/90">{source.lastFetchError}</p>
+        {details && <p className="mt-1 text-xs text-red-700/70 dark:text-red-300/70">{details}</p>}
+        {buttons}
+      </div>
+    </div>
+  );
 }
 
 function AddToPlaylistModal({
@@ -185,8 +273,8 @@ function AddToPlaylistModal({
 
 const ROW = 56;
 
-export default function ChannelPoolViewer({ sourceId, sourceType }: ChannelPoolViewerProps) {
-  const { accentColor, logoBgColor, hideUrls, scrollTarget, setScrollTarget } = useStore();
+export default function ChannelPoolViewer({ sourceId, source, onRetry, isRetrying, onEdit }: ChannelPoolViewerProps) {
+  const { accentColor, logoBgColor, hideUrls, scrollTarget, setScrollTarget, is24Hour } = useStore();
   const scrollToChannelPoolEntryId = scrollTarget?.kind === 'channelPool' ? scrollTarget.id : null;
   const [channels, setChannels] = useState<ChannelPoolEntry[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
@@ -336,6 +424,11 @@ export default function ChannelPoolViewer({ sourceId, sourceType }: ChannelPoolV
     );
   }
 
+  // channelCount only changes when a download works, so it says whether there are saved channels
+  // to show under the error or nothing at all.
+  const downloadFailed = !!source?.lastFetchError;
+  const neverDownloaded = downloadFailed && !source?.channelCount;
+
   const startIdx = Math.max(0, Math.floor(scrollTop / ROW) - 5);
   const endIdx = Math.min(channels.length, Math.ceil((scrollTop + containerHeight) / ROW) + 10);
 
@@ -398,6 +491,10 @@ export default function ChannelPoolViewer({ sourceId, sourceType }: ChannelPoolV
         </div>
       </div>
 
+      {downloadFailed && !neverDownloaded && source && (
+        <DownloadErrorNotice source={source} full={false} accentColor={accentColor} is24Hour={is24Hour} onRetry={onRetry} isRetrying={isRetrying} onEdit={onEdit} />
+      )}
+
       {/* List */}
       <div
         className="flex-1 overflow-y-auto relative"
@@ -408,6 +505,8 @@ export default function ChannelPoolViewer({ sourceId, sourceType }: ChannelPoolV
           <div className="flex flex-col items-center justify-center h-full text-gray-500 dark:text-gray-400">
             <Loader2 className="h-8 w-8 animate-spin mb-4" style={{ color: accentColor }} /><p>Loading channels...</p>
           </div>
+        ) : neverDownloaded && source && channels.length === 0 ? (
+          <DownloadErrorNotice source={source} full accentColor={accentColor} is24Hour={is24Hour} onRetry={onRetry} isRetrying={isRetrying} onEdit={onEdit} />
         ) : channels.length === 0 && loadError ? (
           <div className="flex flex-col items-center justify-center h-full text-gray-500 dark:text-gray-400">
             <p className="text-red-500 dark:text-red-400">{loadError}</p>
@@ -541,7 +640,7 @@ export default function ChannelPoolViewer({ sourceId, sourceType }: ChannelPoolV
           channels={modalChannels}
           playlists={playlists}
           accentColor={accentColor}
-          canSync={sourceType === 'xtream' || sourceType === 'playlist-url'}
+          canSync={source?.type === 'xtream' || source?.type === 'playlist-url'}
           onClose={handleModalClose}
         />
       )}
