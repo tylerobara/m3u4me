@@ -1,0 +1,51 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/tylerobara/m3u4me
+  # Defaults to the chart's appVersion, stamped by CI from the git tag.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Mirrors docker-compose.yml: PORT=8080, playlists persisted under /app/data.
+containerPort: 8080
+
+service:
+  type: ClusterIP
+  port: 8080
+
+persistence:
+  enabled: true
+  size: 1Gi
+  accessModes: [ReadWriteOnce]
+  # Leave empty to use the cluster default storage class.
+  storageClass: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Classic Ingress. Disabled by default; the Service always exists either way.
+ingress:
+  enabled: false
+  className: ""
+  # Leave host empty to match all hosts.
+  host: m3u4me.local
+  path: /
+  annotations: {}
+  # e.g. [{secretName: m3u4me-tls, hosts: [m3u4me.local]}]
+  tls: []
+
+# Gateway API HTTPRoute. Mutually a-la-mode with ingress; enable either, both,
+# or neither. Requires Gateway API CRDs installed in the cluster.
+gateway:
+  enabled: false
+  # e.g. [{name: my-gateway, namespace: gateway-system}]
+  parentRefs:
+    - name: gateway
+      namespace: default
+  hostnames: [m3u4me.local]
+  path: /

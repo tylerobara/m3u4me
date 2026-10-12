@@ -1,0 +1,7 @@
+apiVersion: v2
+name: m3u4me
+description: Playlist-as-a-service that turns m3u/m3u8 sources into ready-to-use playlist URLs
+type: application
+# CI stamps version/appVersion from the git tag at package time.
+version: 0.0.0
+appVersion: "0.0.0"
